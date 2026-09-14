@@ -1,0 +1,20 @@
+{
+  "name": "noteverse-final-project",
+  "version": "1.0.0",
+  "description": "Final project note management app with auth, labels, sharing, realtime, PWA and Docker Compose.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^9.6.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "helmet": "^7.1.0",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.9.13",
+    "ws": "^8.17.0"
+  }
+}

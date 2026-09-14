@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+src/app/data/*.sqlite
+src/app/data/*.sqlite-shm
+src/app/data/*.sqlite-wal
+
+src/app/uploads/*
+!src/app/uploads/.gitkeep
+
+npm-debug.log*
+.DS_Store
+Thumbs.db

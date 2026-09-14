@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NoteVerse - Final Project</title>
+<link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css?v=7">
+</head><body>
+<div id="auth" class="auth-wrap">
+  <section class="auth-card"><h1>NoteVerse</h1><p class="muted">Final Project Note Management Application</p>
+    <div class="tabs"><button onclick="tab('login')">Login</button><button onclick="tab('register')">Register</button><button onclick="tab('forgot')">Reset</button></div>
+    <form id="loginForm" class="auth-form"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" placeholder="Password" required><button>Login</button></form>
+    <form id="registerForm" class="auth-form hidden"><input name="email" type="email" placeholder="Email" required><input name="displayName" placeholder="Display name" required><input name="password" type="password" placeholder="Password" required><input name="confirm" type="password" placeholder="Confirm password" required><button>Create account</button><small>After registration, check MailHog for activation email.</small></form>
+    <form id="forgotForm" class="auth-form hidden"><input name="email" type="email" placeholder="Email" required><button>Send reset link / OTP</button><small>Open MailHog at http://localhost:8025</small></form>
+    <p id="authMsg" class="msg"></p>
+  </section>
+</div>
+<div id="app" class="hidden">
+  <aside class="sidebar">
+    <div class="brand"><img id="userAvatar" src="/icon.svg" alt="Avatar"><div><b>NoteVerse</b><small id="userEmail"></small></div></div>
+    <button id="newNoteBtn" class="primary">+ New note</button>
+    <input id="search" placeholder="Live search notes...">
+    <div class="view-toggle"><button id="gridBtn">Grid</button><button id="listBtn">List</button></div>
+    <div class="scope-tabs"><button id="allNotesBtn">All notes</button><button id="myNotesBtn">My notes</button><button id="sharedNotesBtn">Shared with me</button></div>
+    <h3>Labels</h3><div id="labels"></div>
+    <form id="labelForm" class="inline"><input name="name" placeholder="New label"><button>Add</button></form>
+    <h3>Account</h3><button onclick="openPanel('profilePanel')">Profile & Avatar</button><button onclick="openPanel('prefsPanel')">Preferences</button><button onclick="openPanel('passwordPanel')">Change Password</button><button id="logoutBtn">Logout</button>
+    <p class="hint">Emails are captured by MailHog: <b>localhost:8025</b></p>
+  </aside>
+  <main class="main">
+    <div id="unverified" class="banner hidden">Your account is unverified. Check MailHog and click the activation link.</div>
+    <div id="offline" class="banner hidden">Offline/sync mode: cached notes are available, and note edits are queued until the connection returns.</div>
+    <section id="notifications"></section>
+    <div class="section-title"><h2 id="scopeTitle">All notes</h2><span id="syncState" class="muted"></span></div>
+    <div id="notes" class="notes grid"></div>
+  </main>
+  <section id="editor" class="editor hidden">
+    <div class="editor-head"><div><span id="noteIcons"></span><input id="noteTitle" placeholder="Title"></div><button onclick="closeEditor()">×</button></div>
+    <div id="readOnlyNotice" class="readonly hidden">This shared note is read-only. Editing controls are disabled.</div>
+    <textarea id="noteContent" placeholder="Write your note... Auto-save is enabled."></textarea>
+    <div class="toolbar">
+      <button id="pinBtn">Pin</button><button id="deleteBtn">Delete</button><button id="imageBtn" onclick="openPanel('imagePanel')">Images</button><button id="noteLabelsBtn" onclick="openPanel('noteLabelPanel')">Labels</button><button id="lockBtn" onclick="openPanel('lockPanel')">Lock</button><button id="shareBtn" onclick="openPanel('sharePanel')">Share</button>
+      <span id="saveState">Ready</span>
+    </div>
+    <div id="imageList" class="images"></div><div id="shareList" class="share-list"></div>
+  </section>
+</div>
+<div id="modal" class="modal hidden"><div class="modal-card"><button class="x" onclick="closePanel()">×</button>
+  <div id="profilePanel" class="panel hidden"><h2>Profile & avatar</h2><img id="profileAvatarPreview" class="avatar-preview" src="/icon.svg" alt="Current avatar"><form id="profileForm"><input name="displayName" placeholder="Display name"><input name="avatar" type="file" accept="image/*"><button>Save profile</button></form></div>
+  <div id="prefsPanel" class="panel hidden"><h2>User preferences</h2><form id="prefsForm"><label>Font size <input name="fontSize" type="number" min="12" max="28"></label><label>Theme <select name="theme"><option>light</option><option>dark</option></select></label><label>Default note color <input name="defaultColor" type="color"></label><button>Save preferences</button></form></div>
+  <div id="passwordPanel" class="panel hidden"><h2>Change account password</h2><form id="changePwForm"><input name="current" type="password" placeholder="Current password"><input name="password" type="password" placeholder="New password"><input name="confirm" type="password" placeholder="Confirm new password"><button>Change password</button></form></div>
+  <div id="imagePanel" class="panel hidden"><h2>Attach images</h2><form id="imageForm"><input name="images" type="file" accept="image/*" multiple><button>Upload</button></form></div>
+  <div id="noteLabelPanel" class="panel hidden"><h2>Attach labels</h2><div id="labelChecks"></div><button onclick="saveNoteLabels()">Save labels</button></div>
+  <div id="lockPanel" class="panel hidden"><h2>Password protected note</h2><p id="lockHint" class="muted"></p><form id="lockForm"><input id="lockCurrent" name="current" type="password" placeholder="Current password"><input name="password" type="password" placeholder="New password"><input name="confirm" type="password" placeholder="Confirm new password"><button id="lockSetBtn" name="action" value="set">Enable password</button></form><form id="lockDisableForm" class="lock-disable hidden"><input name="current" type="password" placeholder="Current password"><button>Disable password</button></form></div>
+  <div id="sharePanel" class="panel hidden"><h2>Share note</h2><form id="shareForm"><input name="emails" placeholder="registered emails, comma-separated"><select name="permission"><option value="read">Read only</option><option value="edit">Editable</option></select><button>Share</button></form><div id="ownerShares"></div></div>
+  <p id="modalMsg" class="msg"></p>
+</div></div>
+<script src="/app.js?v=7"></script>
+</body></html>

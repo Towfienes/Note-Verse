@@ -1,0 +1,25 @@
+services:
+  app:
+    build: ./app
+    container_name: noteverse_app
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - SESSION_SECRET=final-project-change-me
+      - APP_BASE_URL=http://localhost:8080
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - MAIL_FROM=NoteVerse <noreply@noteverse.local>
+    volumes:
+      - ./app/data:/usr/src/app/data
+      - ./app/uploads:/usr/src/app/uploads
+    depends_on:
+      - mailhog
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: noteverse_mailhog
+    ports:
+      - "8025:8025"
+      - "1025:1025"
