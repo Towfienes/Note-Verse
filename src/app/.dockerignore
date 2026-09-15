@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log*
+.env*
+data/*
+uploads/*
+!uploads/.gitkeep
+test
+coverage
+.git
+.github
+

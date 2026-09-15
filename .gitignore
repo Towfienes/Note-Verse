@@ -11,5 +11,8 @@ src/app/uploads/*
 !src/app/uploads/.gitkeep
 
 npm-debug.log*
+coverage/
+.eslintcache
+.agent-browser/
 .DS_Store
 Thumbs.db

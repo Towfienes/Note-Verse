@@ -1,11 +1,10 @@
 {
-  "name": "NoteVerse Final Project",
+  "name": "NoteVerse",
   "short_name": "NoteVerse",
+  "description": "A secure, offline-capable note workspace.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f8fafc",
+  "background_color": "#f7f7fb",
   "theme_color": "#4f46e5",
-  "icons": [
-    {"src":"/icon.svg","sizes":"any","type":"image/svg+xml"}
-  ]
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }

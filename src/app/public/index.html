@@ -1,57 +1,398 @@
 <!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NoteVerse - Final Project</title>
-<link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css?v=7">
-</head><body>
-<div id="auth" class="auth-wrap">
-  <section class="auth-card"><h1>NoteVerse</h1><p class="muted">Final Project Note Management Application</p>
-    <div class="tabs"><button onclick="tab('login')">Login</button><button onclick="tab('register')">Register</button><button onclick="tab('forgot')">Reset</button></div>
-    <form id="loginForm" class="auth-form"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" placeholder="Password" required><button>Login</button></form>
-    <form id="registerForm" class="auth-form hidden"><input name="email" type="email" placeholder="Email" required><input name="displayName" placeholder="Display name" required><input name="password" type="password" placeholder="Password" required><input name="confirm" type="password" placeholder="Confirm password" required><button>Create account</button><small>After registration, check MailHog for activation email.</small></form>
-    <form id="forgotForm" class="auth-form hidden"><input name="email" type="email" placeholder="Email" required><button>Send reset link / OTP</button><small>Open MailHog at http://localhost:8025</small></form>
-    <p id="authMsg" class="msg"></p>
-  </section>
-</div>
-<div id="app" class="hidden">
-  <aside class="sidebar">
-    <div class="brand"><img id="userAvatar" src="/icon.svg" alt="Avatar"><div><b>NoteVerse</b><small id="userEmail"></small></div></div>
-    <button id="newNoteBtn" class="primary">+ New note</button>
-    <input id="search" placeholder="Live search notes...">
-    <div class="view-toggle"><button id="gridBtn">Grid</button><button id="listBtn">List</button></div>
-    <div class="scope-tabs"><button id="allNotesBtn">All notes</button><button id="myNotesBtn">My notes</button><button id="sharedNotesBtn">Shared with me</button></div>
-    <h3>Labels</h3><div id="labels"></div>
-    <form id="labelForm" class="inline"><input name="name" placeholder="New label"><button>Add</button></form>
-    <h3>Account</h3><button onclick="openPanel('profilePanel')">Profile & Avatar</button><button onclick="openPanel('prefsPanel')">Preferences</button><button onclick="openPanel('passwordPanel')">Change Password</button><button id="logoutBtn">Logout</button>
-    <p class="hint">Emails are captured by MailHog: <b>localhost:8025</b></p>
-  </aside>
-  <main class="main">
-    <div id="unverified" class="banner hidden">Your account is unverified. Check MailHog and click the activation link.</div>
-    <div id="offline" class="banner hidden">Offline/sync mode: cached notes are available, and note edits are queued until the connection returns.</div>
-    <section id="notifications"></section>
-    <div class="section-title"><h2 id="scopeTitle">All notes</h2><span id="syncState" class="muted"></span></div>
-    <div id="notes" class="notes grid"></div>
-  </main>
-  <section id="editor" class="editor hidden">
-    <div class="editor-head"><div><span id="noteIcons"></span><input id="noteTitle" placeholder="Title"></div><button onclick="closeEditor()">×</button></div>
-    <div id="readOnlyNotice" class="readonly hidden">This shared note is read-only. Editing controls are disabled.</div>
-    <textarea id="noteContent" placeholder="Write your note... Auto-save is enabled."></textarea>
-    <div class="toolbar">
-      <button id="pinBtn">Pin</button><button id="deleteBtn">Delete</button><button id="imageBtn" onclick="openPanel('imagePanel')">Images</button><button id="noteLabelsBtn" onclick="openPanel('noteLabelPanel')">Labels</button><button id="lockBtn" onclick="openPanel('lockPanel')">Lock</button><button id="shareBtn" onclick="openPanel('sharePanel')">Share</button>
-      <span id="saveState">Ready</span>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#4f46e5" />
+    <title>NoteVerse — Your ideas, in sync</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles.css?v=8" />
+  </head>
+  <body>
+    <div id="auth" class="auth-shell">
+      <section class="auth-intro" aria-label="About NoteVerse">
+        <a class="logo" href="/" aria-label="NoteVerse home"
+          ><img src="/icon.svg" alt="" /> NoteVerse</a
+        >
+        <div>
+          <p class="eyebrow">A calmer place to think</p>
+          <h1>Your ideas.<br /><span>Always within reach.</span></h1>
+          <p class="lede">
+            Write in Markdown, work offline, and collaborate without losing your place.
+          </p>
+        </div>
+        <p class="auth-credit">Created and maintained by Ngô Lâm Tiến</p>
+      </section>
+      <section class="auth-panel">
+        <div class="auth-card">
+          <p class="eyebrow">Welcome</p>
+          <h2 id="authTitle">Sign in to NoteVerse</h2>
+          <div class="tabs" role="tablist" aria-label="Account actions">
+            <button type="button" role="tab" data-auth-tab="login" aria-selected="true">
+              Sign in
+            </button>
+            <button type="button" role="tab" data-auth-tab="register">Create account</button>
+            <button type="button" role="tab" data-auth-tab="forgot">Reset</button>
+          </div>
+          <form id="loginForm" class="auth-form">
+            <label>Email <input name="email" type="email" autocomplete="email" required /></label>
+            <label
+              >Password
+              <input name="password" type="password" autocomplete="current-password" required
+            /></label>
+            <button class="primary" type="submit">Sign in</button>
+          </form>
+          <form id="registerForm" class="auth-form hidden">
+            <label>Email <input name="email" type="email" autocomplete="email" required /></label>
+            <label
+              >Display name <input name="displayName" autocomplete="name" maxlength="80" required
+            /></label>
+            <label
+              >Password
+              <input
+                name="password"
+                type="password"
+                minlength="10"
+                autocomplete="new-password"
+                required
+            /></label>
+            <label
+              >Confirm password
+              <input
+                name="confirm"
+                type="password"
+                minlength="10"
+                autocomplete="new-password"
+                required
+            /></label>
+            <button class="primary" type="submit">Create account</button>
+            <small>Activate the account from the email sent by the configured SMTP service.</small>
+          </form>
+          <form id="forgotForm" class="auth-form hidden">
+            <label>Email <input name="email" type="email" autocomplete="email" required /></label>
+            <button class="primary" type="submit">Send reset link</button>
+          </form>
+          <p id="authMsg" class="form-message" role="status" aria-live="polite"></p>
+        </div>
+      </section>
     </div>
-    <div id="imageList" class="images"></div><div id="shareList" class="share-list"></div>
-  </section>
-</div>
-<div id="modal" class="modal hidden"><div class="modal-card"><button class="x" onclick="closePanel()">×</button>
-  <div id="profilePanel" class="panel hidden"><h2>Profile & avatar</h2><img id="profileAvatarPreview" class="avatar-preview" src="/icon.svg" alt="Current avatar"><form id="profileForm"><input name="displayName" placeholder="Display name"><input name="avatar" type="file" accept="image/*"><button>Save profile</button></form></div>
-  <div id="prefsPanel" class="panel hidden"><h2>User preferences</h2><form id="prefsForm"><label>Font size <input name="fontSize" type="number" min="12" max="28"></label><label>Theme <select name="theme"><option>light</option><option>dark</option></select></label><label>Default note color <input name="defaultColor" type="color"></label><button>Save preferences</button></form></div>
-  <div id="passwordPanel" class="panel hidden"><h2>Change account password</h2><form id="changePwForm"><input name="current" type="password" placeholder="Current password"><input name="password" type="password" placeholder="New password"><input name="confirm" type="password" placeholder="Confirm new password"><button>Change password</button></form></div>
-  <div id="imagePanel" class="panel hidden"><h2>Attach images</h2><form id="imageForm"><input name="images" type="file" accept="image/*" multiple><button>Upload</button></form></div>
-  <div id="noteLabelPanel" class="panel hidden"><h2>Attach labels</h2><div id="labelChecks"></div><button onclick="saveNoteLabels()">Save labels</button></div>
-  <div id="lockPanel" class="panel hidden"><h2>Password protected note</h2><p id="lockHint" class="muted"></p><form id="lockForm"><input id="lockCurrent" name="current" type="password" placeholder="Current password"><input name="password" type="password" placeholder="New password"><input name="confirm" type="password" placeholder="Confirm new password"><button id="lockSetBtn" name="action" value="set">Enable password</button></form><form id="lockDisableForm" class="lock-disable hidden"><input name="current" type="password" placeholder="Current password"><button>Disable password</button></form></div>
-  <div id="sharePanel" class="panel hidden"><h2>Share note</h2><form id="shareForm"><input name="emails" placeholder="registered emails, comma-separated"><select name="permission"><option value="read">Read only</option><option value="edit">Editable</option></select><button>Share</button></form><div id="ownerShares"></div></div>
-  <p id="modalMsg" class="msg"></p>
-</div></div>
-<script src="/app.js?v=7"></script>
-</body></html>
+
+    <div id="app" class="app-shell hidden">
+      <header class="mobile-header">
+        <button
+          id="menuBtn"
+          class="icon-button"
+          type="button"
+          aria-label="Open navigation"
+          aria-expanded="false"
+        >
+          ☰
+        </button>
+        <a class="logo" href="/"><img src="/icon.svg" alt="" /> NoteVerse</a>
+        <span id="mobileSync" class="status-dot" title="Sync status"></span>
+      </header>
+      <aside id="sidebar" class="sidebar" aria-label="Note navigation">
+        <div class="brand-row">
+          <a class="logo" href="/"><img src="/icon.svg" alt="" /> NoteVerse</a>
+          <button
+            id="sidebarClose"
+            class="icon-button mobile-only"
+            type="button"
+            aria-label="Close navigation"
+          >
+            ×
+          </button>
+        </div>
+        <button id="newNoteBtn" class="primary new-note" type="button">
+          <span>＋</span> New note
+        </button>
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span><span class="sr-only">Search notes</span>
+          <input id="search" type="search" placeholder="Search your notes" autocomplete="off" /><kbd
+            >/</kbd
+          >
+        </label>
+        <nav class="scope-nav" aria-label="Note collections">
+          <button type="button" data-scope="all" class="active">
+            <span>◫</span> All notes <small id="allCount"></small>
+          </button>
+          <button type="button" data-scope="mine"><span>⌂</span> My notes</button>
+          <button type="button" data-scope="shared"><span>♢</span> Shared with me</button>
+          <button type="button" data-scope="trash"><span>♲</span> Trash</button>
+        </nav>
+        <div class="sidebar-section">
+          <div class="sidebar-heading">
+            <span>Labels</span
+            ><button id="addLabelBtn" class="icon-button" type="button" aria-label="Add label">
+              ＋
+            </button>
+          </div>
+          <div id="labels" class="label-list"></div>
+          <form id="labelForm" class="inline hidden">
+            <label class="sr-only" for="newLabelName">New label</label
+            ><input id="newLabelName" name="name" maxlength="60" placeholder="Label name" /><button
+              type="submit"
+            >
+              Add
+            </button>
+          </form>
+        </div>
+        <div class="sidebar-section data-tools">
+          <div class="sidebar-heading"><span>Data</span></div>
+          <button id="exportJsonBtn" type="button">Export JSON</button>
+          <button id="exportMarkdownBtn" type="button">Export Markdown</button>
+          <button type="button" data-open-panel="importPanel">Import notes</button>
+        </div>
+        <div class="account-menu">
+          <img id="userAvatar" src="/icon.svg" alt="Profile avatar" />
+          <button id="accountBtn" type="button" aria-expanded="false">
+            <b id="userName">Account</b><small id="userEmail"></small>
+          </button>
+          <button id="themeBtn" class="icon-button" type="button" aria-label="Toggle theme">
+            ◐
+          </button>
+        </div>
+        <div id="accountPopover" class="account-popover hidden">
+          <button type="button" data-open-panel="profilePanel">Profile</button
+          ><button type="button" data-open-panel="prefsPanel">Preferences</button
+          ><button type="button" data-open-panel="passwordPanel">Password</button
+          ><button id="logoutBtn" type="button">Sign out</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div id="offline" class="banner warning hidden" role="status">
+          You’re offline. Drafts stay on this device and sync when you reconnect.
+        </div>
+        <section id="notifications" aria-live="polite"></section>
+        <header class="content-header">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h1 id="scopeTitle">All notes</h1>
+            <p id="scopeSubtitle" class="muted">Everything you’re working on, in one place.</p>
+          </div>
+          <div class="header-actions">
+            <span id="syncState" class="sync-state" role="status" aria-live="polite"
+              >Up to date</span
+            >
+            <div class="view-toggle" aria-label="Note view">
+              <button id="gridBtn" type="button" aria-label="Grid view">▦</button
+              ><button id="listBtn" type="button" aria-label="List view">☷</button>
+            </div>
+          </div>
+        </header>
+        <div id="notes" class="notes grid" aria-live="polite"></div>
+      </main>
+
+      <section id="editor" class="editor hidden" aria-label="Note editor">
+        <header class="editor-head">
+          <div class="editor-title-row">
+            <span id="noteIcons" aria-hidden="true"></span
+            ><input id="noteTitle" maxlength="200" placeholder="Untitled" aria-label="Note title" />
+          </div>
+          <button id="closeEditorBtn" class="icon-button" type="button" aria-label="Close editor">
+            ×
+          </button>
+        </header>
+        <div id="readOnlyNotice" class="banner info hidden">This note is shared as read-only.</div>
+        <div id="conflictNotice" class="conflict hidden" role="alert">
+          <div>
+            <b>A newer version exists</b>
+            <p>Your draft is safe. Choose which version to continue with.</p>
+          </div>
+          <button id="useServerBtn" type="button">Use server version</button
+          ><button id="keepMineBtn" class="primary" type="button">Keep my draft</button>
+        </div>
+        <div class="editor-tabs" role="tablist" aria-label="Editor mode">
+          <button id="writeTab" class="active" type="button" role="tab" aria-selected="true">
+            Write</button
+          ><button id="previewTab" type="button" role="tab" aria-selected="false">Preview</button
+          ><span class="markdown-hint">Markdown supported</span>
+        </div>
+        <textarea
+          id="noteContent"
+          placeholder="Start writing…"
+          aria-label="Note content"
+        ></textarea>
+        <article
+          id="markdownPreview"
+          class="markdown-preview hidden"
+          aria-label="Markdown preview"
+        ></article>
+        <div id="imageList" class="images"></div>
+        <div id="shareList" class="share-list"></div>
+        <footer class="toolbar">
+          <div>
+            <button id="pinBtn" type="button">Pin</button
+            ><button id="imageBtn" type="button" data-open-panel="imagePanel">Image</button
+            ><button id="noteLabelsBtn" type="button" data-open-panel="noteLabelPanel">
+              Labels</button
+            ><button id="lockBtn" type="button" data-open-panel="lockPanel">Lock</button
+            ><button id="shareBtn" type="button" data-open-panel="sharePanel">Share</button
+            ><button id="deleteBtn" class="danger-text" type="button">Move to trash</button>
+          </div>
+          <span id="saveState" class="sync-state">Ready</span>
+        </footer>
+      </section>
+    </div>
+
+    <div
+      id="modal"
+      class="modal hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modalTitle"
+    >
+      <div class="modal-card">
+        <button
+          id="closeModalBtn"
+          class="icon-button modal-close"
+          type="button"
+          aria-label="Close dialog"
+        >
+          ×
+        </button>
+        <div id="profilePanel" class="panel hidden">
+          <h2 id="modalTitle">Profile</h2>
+          <img
+            id="profileAvatarPreview"
+            class="avatar-preview"
+            src="/icon.svg"
+            alt="Current avatar"
+          />
+          <form id="profileForm">
+            <label>Display name <input name="displayName" maxlength="80" required /></label
+            ><label
+              >Avatar
+              <input
+                name="avatar"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp" /></label
+            ><button class="primary" type="submit">Save profile</button>
+          </form>
+        </div>
+        <div id="prefsPanel" class="panel hidden">
+          <h2>Preferences</h2>
+          <form id="prefsForm">
+            <label>Font size <input name="fontSize" type="number" min="12" max="24" /></label
+            ><label
+              >Theme
+              <select name="theme">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select></label
+            ><label>Default note color <input name="defaultColor" type="color" /></label
+            ><button class="primary" type="submit">Save preferences</button>
+          </form>
+        </div>
+        <div id="passwordPanel" class="panel hidden">
+          <h2>Change password</h2>
+          <form id="changePwForm">
+            <label
+              >Current password
+              <input
+                name="current"
+                type="password"
+                autocomplete="current-password"
+                required /></label
+            ><label
+              >New password
+              <input
+                name="password"
+                type="password"
+                minlength="10"
+                autocomplete="new-password"
+                required /></label
+            ><label
+              >Confirm password
+              <input
+                name="confirm"
+                type="password"
+                minlength="10"
+                autocomplete="new-password"
+                required /></label
+            ><button class="primary" type="submit">Change password</button>
+          </form>
+        </div>
+        <div id="imagePanel" class="panel hidden">
+          <h2>Attach images</h2>
+          <p class="muted">PNG, JPEG, GIF or WebP. Up to 5 MB each.</p>
+          <form id="imageForm">
+            <label
+              >Images
+              <input
+                name="images"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                required /></label
+            ><button class="primary" type="submit">Upload</button>
+          </form>
+        </div>
+        <div id="noteLabelPanel" class="panel hidden">
+          <h2>Note labels</h2>
+          <div id="labelChecks"></div>
+          <button id="saveLabelsBtn" class="primary" type="button">Save labels</button>
+        </div>
+        <div id="lockPanel" class="panel hidden">
+          <h2>Note password</h2>
+          <p id="lockHint" class="muted"></p>
+          <form id="lockForm">
+            <label id="lockCurrentLabel"
+              >Current password <input id="lockCurrent" name="current" type="password" /></label
+            ><label>New password <input name="password" type="password" minlength="8" /></label
+            ><label>Confirm password <input name="confirm" type="password" minlength="8" /></label
+            ><button id="lockSetBtn" class="primary" type="submit">Enable password</button>
+          </form>
+          <form id="lockDisableForm" class="lock-disable hidden">
+            <label>Current password <input name="current" type="password" required /></label
+            ><button class="danger" type="submit">Disable protection</button>
+          </form>
+          <p class="callout">
+            A note password adds access control. It is not end-to-end encryption.
+          </p>
+        </div>
+        <div id="sharePanel" class="panel hidden">
+          <h2>Share note</h2>
+          <form id="shareForm">
+            <label
+              >Registered emails
+              <input name="emails" placeholder="teammate@example.com" required /></label
+            ><label
+              >Permission
+              <select name="permission">
+                <option value="read">Read only</option>
+                <option value="edit">Can edit</option>
+              </select></label
+            ><button class="primary" type="submit">Share</button>
+          </form>
+          <div id="ownerShares"></div>
+        </div>
+        <div id="importPanel" class="panel hidden">
+          <h2>Import notes</h2>
+          <form id="importForm">
+            <label
+              >File
+              <input
+                name="file"
+                type="file"
+                accept=".json,.md,text/markdown,application/json"
+                required /></label
+            ><label
+              >Duplicates
+              <select name="duplicateStrategy">
+                <option value="skip">Skip exact duplicates</option>
+                <option value="copy">Create a copy</option>
+                <option value="replace">Replace notes with the same title</option>
+              </select></label
+            ><button class="primary" type="submit">Import</button>
+          </form>
+        </div>
+        <p id="modalMsg" class="form-message" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <script src="/markdown.js?v=8"></script>
+    <script src="/app.js?v=8"></script>
+  </body>
+</html>

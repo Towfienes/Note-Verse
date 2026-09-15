@@ -2,110 +2,172 @@ let me = null;
 let notes = [];
 let labels = [];
 let current = null;
-let view = localStorage.view || "grid";
-let scope = localStorage.noteScope || "all";
-let saveTimer = null;
-let searchTimer = null;
-let stateTimer = null;
-let refreshTimer = null;
+let scope = "all";
+let view = "grid";
 let socket = null;
+let searchTimer = null;
+let saveTimer = null;
+let refreshTimer = null;
+let toastTimer = null;
+let saving = false;
+let saveAgain = false;
+let draftDirty = false;
+let currentConflict = null;
 
-const OFFLINE_EDITS_KEY = "noteverseOfflineEdits";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const { escapeHtml: esc, renderMarkdown } = window.NoteVerseMarkdown;
 
-async function api(url, opt = {}) {
-  const headers =
-    opt.body instanceof FormData ? {} : { "Content-Type": "application/json" };
-  const response = await fetch(url, { headers, ...opt });
-  if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ error: response.statusText }));
-    throw new Error(error.error || "Request failed");
+class ApiError extends Error {
+  constructor(message, status, data = {}) {
+    super(message);
+    this.status = status;
+    this.data = data;
   }
-  return response.json().catch(() => ({ ok: true }));
 }
 
-function esc(value) {
-  return String(value ?? "").replace(
-    /[&<>"']/g,
-    (char) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      })[char],
-  );
-}
-
-function tab(name) {
-  $$(".auth-form").forEach((form) => form.classList.add("hidden"));
-  $(`#${name}Form`).classList.remove("hidden");
-  $("#authMsg").textContent = "";
-}
-
-function toast(message) {
-  $("#modalMsg").textContent = message;
-  setTimeout(() => {
-    $("#modalMsg").textContent = "";
-  }, 3500);
-}
-
-function getQueuedEdits() {
+async function api(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("X-NoteVerse-Request", "1");
+  if (options.body && !(options.body instanceof FormData))
+    headers.set("Content-Type", "application/json");
+  let response;
   try {
-    return JSON.parse(localStorage.getItem(OFFLINE_EDITS_KEY) || "{}");
+    response = await fetch(url, { credentials: "same-origin", ...options, headers });
+  } catch (error) {
+    throw new ApiError(error.message || "Network request failed.", 0);
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new ApiError(
+      data.error || response.statusText || "Request failed.",
+      response.status,
+      data,
+    );
+  return data;
+}
+
+function accountKey(suffix, id = me?.id) {
+  return id ? `noteverse:${id}:${suffix}` : null;
+}
+
+function readJson(key, fallback) {
+  if (!key) return fallback;
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? fallback;
   } catch {
-    return {};
+    return fallback;
   }
 }
 
-function saveQueuedEdits(queue) {
-  localStorage.setItem(OFFLINE_EDITS_KEY, JSON.stringify(queue));
+function writeJson(key, value) {
+  if (!key) return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    showToast("This browser could not save the offline copy.", true);
+  }
+}
+
+function cacheAccount() {
+  if (!me) return;
+  writeJson(accountKey("profile"), me);
+  localStorage.setItem("noteverse:lastUserId", String(me.id));
+}
+
+function noteCacheKey() {
+  return accountKey(scope === "trash" ? "notes:trash" : "notes:active");
+}
+
+function cacheNotes(replace = false) {
+  const safeNotes = notes.map((note) =>
+    note.is_locked
+      ? {
+          ...note,
+          title: "Protected note",
+          content: "",
+          labels: [],
+          images: [],
+          is_unlocked: false,
+        }
+      : note,
+  );
+  if (replace) return writeJson(noteCacheKey(), safeNotes);
+  const merged = new Map(readJson(noteCacheKey(), []).map((note) => [note.id, note]));
+  for (const note of safeNotes) merged.set(note.id, note);
+  writeJson(noteCacheKey(), [...merged.values()]);
+}
+
+function queuedEdits() {
+  return readJson(accountKey("edits"), {});
+}
+
+function saveQueue(queue) {
+  writeJson(accountKey("edits"), queue);
   updateSyncState();
 }
 
-function queuedEditCount() {
-  return Object.keys(getQueuedEdits()).length;
+function purgeAccount(id) {
+  if (!id) return;
+  for (const suffix of ["profile", "notes:active", "notes:trash", "edits", "scope", "view"]) {
+    localStorage.removeItem(accountKey(suffix, id));
+  }
+  if (localStorage.getItem("noteverse:lastUserId") === String(id))
+    localStorage.removeItem("noteverse:lastUserId");
+}
+
+function showToast(message, isError = false) {
+  clearTimeout(toastTimer);
+  const box = $("#toast");
+  box.textContent = message;
+  box.classList.remove("hidden");
+  box.style.background = isError ? "#8f2136" : "#24212f";
+  toastTimer = setTimeout(() => box.classList.add("hidden"), 4500);
+}
+
+function showAuthTab(name) {
+  const titles = {
+    login: "Sign in to NoteVerse",
+    register: "Create your account",
+    forgot: "Reset your password",
+  };
+  $$(".auth-form").forEach((form) => form.classList.add("hidden"));
+  $(`#${name}Form`).classList.remove("hidden");
+  $$("[data-auth-tab]").forEach((button) =>
+    button.setAttribute("aria-selected", String(button.dataset.authTab === name)),
+  );
+  $("#authTitle").textContent = titles[name];
+  $("#authMsg").textContent = "";
+}
+
+function networkError(error) {
+  return error.status === 0 || !navigator.onLine;
 }
 
 function updateSyncState(message = "") {
-  const count = queuedEditCount();
-  const syncState = $("#syncState");
-  if (syncState) {
-    syncState.textContent =
-      message ||
-      (count
-        ? `${count} offline edit${count === 1 ? "" : "s"} waiting to sync`
-        : "");
+  const count = Object.keys(queuedEdits()).length;
+  const offline = !navigator.onLine;
+  const label =
+    message ||
+    (offline
+      ? "Offline"
+      : count
+        ? `${count} draft${count === 1 ? "" : "s"} waiting`
+        : "Up to date");
+  const element = $("#syncState");
+  if (element) {
+    element.textContent = label;
+    element.classList.toggle("busy", offline || count > 0 || saving);
+    element.classList.toggle("error", Boolean(currentConflict));
   }
-  const offline = $("#offline");
-  if (offline) {
-    offline.classList.toggle("hidden", navigator.onLine && count === 0);
-  }
+  $("#offline")?.classList.toggle("hidden", !offline && count === 0);
+  $("#mobileSync")?.classList.toggle("error", offline || count > 0);
 }
 
-function networkLooksOffline(error) {
-  return (
-    !navigator.onLine ||
-    /Failed to fetch|NetworkError|Load failed/i.test(error.message || "")
-  );
-}
-
-function cacheNotes() {
-  try {
-    localStorage.cachedNotes = JSON.stringify(notes);
-  } catch {}
-}
-
-function applyQueuedEdits(list) {
-  const queued = getQueuedEdits();
+function applyQueued(list) {
+  const queue = queuedEdits();
   return list.map((note) =>
-    queued[note.id]
-      ? { ...note, ...queued[note.id], offlineQueued: true }
-      : note,
+    queue[note.id] ? { ...note, ...queue[note.id], offlineQueued: true } : note,
   );
 }
 
@@ -115,875 +177,966 @@ function patchNote(id, patch) {
   cacheNotes();
 }
 
-function queueOfflineEdit(noteId, body) {
-  const queue = getQueuedEdits();
-  queue[noteId] = { id: noteId, ...body, queuedAt: new Date().toISOString() };
-  saveQueuedEdits(queue);
-  patchNote(noteId, { ...body, offlineQueued: true });
+function queueDraft(note, body) {
+  if (note.is_locked) return false;
+  const queue = queuedEdits();
+  queue[note.id] = {
+    id: note.id,
+    title: body.title,
+    content: body.content,
+    color: body.color,
+    baseVersion: note.version,
+    queuedAt: new Date().toISOString(),
+  };
+  saveQueue(queue);
+  patchNote(note.id, { ...body, offlineQueued: true });
+  return true;
+}
+
+function removeQueuedDraft(noteId) {
+  const queue = queuedEdits();
+  delete queue[noteId];
+  saveQueue(queue);
 }
 
 async function syncOfflineEdits() {
-  if (!navigator.onLine || !me) {
-    updateSyncState();
-    return;
-  }
-
-  const entries = Object.values(getQueuedEdits());
-  if (!entries.length) {
-    updateSyncState("");
-    return;
-  }
-
-  updateSyncState(
-    `Syncing ${entries.length} offline edit${entries.length === 1 ? "" : "s"}...`,
-  );
+  if (!navigator.onLine || !me) return updateSyncState();
+  const entries = Object.values(queuedEdits());
+  if (!entries.length) return updateSyncState();
+  updateSyncState(`Syncing ${entries.length} draft${entries.length === 1 ? "" : "s"}…`);
   for (const edit of entries) {
     try {
-      await api(`/api/notes/${edit.id}`, {
+      const saved = await api(`/api/notes/${edit.id}`, {
         method: "PUT",
         body: JSON.stringify({
           title: edit.title,
           content: edit.content,
+          color: edit.color,
+          baseVersion: edit.baseVersion,
         }),
       });
-      const queue = getQueuedEdits();
-      delete queue[edit.id];
-      saveQueuedEdits(queue);
-      patchNote(edit.id, {
-        title: edit.title,
-        content: edit.content,
-        offlineQueued: false,
-      });
-      renderNotes();
+      removeQueuedDraft(edit.id);
+      patchNote(edit.id, { ...saved, offlineQueued: false });
     } catch (error) {
-      if (networkLooksOffline(error)) break;
-      const queue = getQueuedEdits();
-      delete queue[edit.id];
-      saveQueuedEdits(queue);
-      toast(
-        `Offline edit for note #${edit.id} was not synced: ${error.message}`,
-      );
+      if (networkError(error)) break;
+      if (error.status === 409) {
+        if (current?.id === edit.id) showConflict(edit, error.data.current);
+        showToast(`Draft “${edit.title}” needs conflict review.`, true);
+      } else {
+        showToast(`Draft “${edit.title}” is still saved locally: ${error.message}`, true);
+      }
     }
   }
-
-  if (queuedEditCount() === 0) {
-    updateSyncState("All offline edits synced");
-    if (
-      current?.permission === "edit" &&
-      socket?.readyState !== WebSocket.OPEN
-    ) {
-      connectRealtime();
-    }
-    setTimeout(() => updateSyncState(""), 2000);
-  } else {
-    updateSyncState();
-  }
-}
-
-async function boot() {
-  if ("serviceWorker" in navigator)
-    navigator.serviceWorker.register("/service-worker.js");
-  window.addEventListener("online", async () => {
-    await syncOfflineEdits();
-    await loadNotes();
-  });
-  window.addEventListener("offline", () => updateSyncState());
-  await checkMe();
   updateSyncState();
+  renderNotes();
 }
 
 async function checkMe() {
   try {
     const data = await api("/api/me");
     me = data.user;
-    $("#auth").classList.add("hidden");
-    $("#app").classList.remove("hidden");
-    $("#userEmail").textContent = me.email;
-    $("#userAvatar").src = me.avatar_path || "/icon.svg";
-    $("#unverified").classList.toggle("hidden", !!me.is_active);
-    document.body.classList.toggle("dark", me.preferences?.theme === "dark");
-    document.body.style.fontSize = `${me.preferences?.fontSize || 16}px`;
-    renderNotifications(data.notifications || []);
+    cacheAccount();
+    scope = localStorage.getItem(accountKey("scope")) || "all";
+    view = localStorage.getItem(accountKey("view")) || "grid";
+    showApplication(data.notifications || []);
     await loadLabels();
-    await syncOfflineEdits();
     await loadNotes();
-    startLiveRefresh();
-  } catch {
-    $("#auth").classList.remove("hidden");
-    $("#app").classList.add("hidden");
+    await syncOfflineEdits();
+    startRefresh();
+  } catch (error) {
+    const lastId = localStorage.getItem("noteverse:lastUserId");
+    const cachedProfile = readJson(accountKey("profile", lastId), null);
+    if (networkError(error) && cachedProfile) {
+      me = cachedProfile;
+      scope = localStorage.getItem(accountKey("scope")) || "all";
+      view = localStorage.getItem(accountKey("view")) || "grid";
+      labels = [];
+      notes = applyQueued(readJson(noteCacheKey(), []));
+      showApplication([]);
+      renderNotes();
+      updateSyncState();
+    } else {
+      if (error.status === 401 && lastId) purgeAccount(lastId);
+      me = null;
+      $("#auth").classList.remove("hidden");
+      $("#app").classList.add("hidden");
+    }
   }
 }
 
-function startLiveRefresh() {
-  if (refreshTimer) return;
+function showApplication(notifications) {
+  $("#auth").classList.add("hidden");
+  $("#app").classList.remove("hidden");
+  $("#userName").textContent = me.display_name;
+  $("#userEmail").textContent = me.email;
+  $("#userAvatar").src = me.avatar_url || "/icon.svg";
+  document.body.classList.toggle("dark", me.preferences?.theme === "dark");
+  document.body.style.fontSize = `${me.preferences?.fontSize || 16}px`;
+  renderNotifications(notifications);
+  updateSyncState();
+}
+
+function startRefresh() {
+  clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
-    if (me && navigator.onLine && !document.hidden) loadNotes();
-  }, 5000);
+    if (me && navigator.onLine && !document.hidden && !draftDirty && !currentConflict) loadNotes();
+  }, 15_000);
 }
 
 function renderNotifications(items) {
-  const container = $("#notifications");
-  const newItems = (items || []).filter((item) => !item.is_read);
-  if (!newItems.length) {
-    container.innerHTML = "";
-    return;
-  }
-  container.innerHTML = newItems
-    .map(
-      (item) =>
-        `<div class="notification">${esc(item.message)} <small>${esc(item.created_at)}</small></div>`,
-    )
+  const unread = items.filter((item) => !item.is_read);
+  $("#notifications").innerHTML = unread
+    .map((item) => `<div class="notification">${esc(item.message)}</div>`)
     .join("");
-
-  // Auto-hide notifications after a short delay and mark them read on the server
-  setTimeout(() => {
-    container.innerHTML = "";
-  }, 3500);
-  (async () => {
-    try {
-      await api("/api/notifications/mark-read", { method: "POST" });
-    } catch (e) {}
-  })();
+  if (unread.length) {
+    api("/api/notifications/mark-read", { method: "POST" }).catch(() => {});
+    setTimeout(() => {
+      $("#notifications").innerHTML = "";
+    }, 6000);
+  }
 }
 
 async function loadLabels() {
+  if (!navigator.onLine) return;
   labels = await api("/api/labels");
   renderLabels();
 }
 
 function renderLabels() {
-  const activeLabel = new URLSearchParams(location.search).get("label") || "";
+  const active = new URLSearchParams(location.search).get("label") || "";
   $("#labels").innerHTML =
-    `
-    <div class="label-row single">
-      <button class="label-filter ${activeLabel ? "" : "active"}" onclick="filterLabel('')">All labels</button>
-    </div>
-  ` +
+    `<button type="button" class="label-filter ${active ? "" : "active"}" data-label-filter="">All labels</button>` +
     labels
       .map(
-        (label) => `
-    <div class="label-row">
-      <button class="label-filter ${String(label.id) === activeLabel ? "active" : ""}" title="${esc(label.name)}" onclick="filterLabel(${label.id})">${esc(label.name)}</button>
-      <span class="label-actions">
-        <button title="Rename label" onclick="renameLabel(${label.id})">Rename</button>
-        <button title="Delete label" onclick="deleteLabel(${label.id})">Delete</button>
-      </span>
-    </div>
-  `,
+        (label) =>
+          `<div class="label-row"><button type="button" class="label-filter ${String(label.id) === active ? "active" : ""}" data-label-filter="${label.id}"># ${esc(label.name)}</button><button type="button" class="label-more" data-label-menu="${label.id}" aria-label="Label options for ${esc(label.name)}">•••</button></div>`,
       )
       .join("");
-  if (current) renderLabelChecks();
-}
-
-function filterLabel(id) {
-  const params = new URLSearchParams(location.search);
-  if (id) params.set("label", id);
-  else params.delete("label");
-  history.replaceState(
-    null,
-    "",
-    params.toString() ? `?${params}` : location.pathname,
-  );
-  loadNotes();
-}
-
-function setNoteScope(nextScope) {
-  scope = nextScope;
-  localStorage.noteScope = nextScope;
-  renderNotes();
-}
-
-function renderScopeControls() {
-  const titles = {
-    all: "All notes",
-    mine: "My notes",
-    shared: "Shared with me",
-  };
-  $("#scopeTitle").textContent = titles[scope] || titles.all;
-  [
-    ["#allNotesBtn", "all"],
-    ["#myNotesBtn", "mine"],
-    ["#sharedNotesBtn", "shared"],
-  ].forEach(([selector, value]) => {
-    const button = $(selector);
-    if (button) button.classList.toggle("active", scope === value);
-  });
+  renderLabelChecks();
 }
 
 async function loadNotes() {
+  const params = new URLSearchParams();
+  const search = $("#search").value.trim();
+  const label = new URLSearchParams(location.search).get("label");
+  if (search) params.set("search", search);
+  if (label && scope !== "trash") params.set("label", label);
+  if (scope === "trash") params.set("trash", "1");
   try {
-    if (!navigator.onLine && localStorage.cachedNotes) {
-      notes = applyQueuedEdits(JSON.parse(localStorage.cachedNotes));
-      refreshCurrentFromNotes();
-      renderNotes();
-      return;
-    }
-
-    const params = new URLSearchParams();
-    const search = $("#search").value.trim();
-    const label = new URLSearchParams(location.search).get("label");
-    if (search) params.set("search", search);
-    if (label) params.set("label", label);
-    notes = applyQueuedEdits(await api(`/api/notes?${params}`));
-    cacheNotes();
-    refreshCurrentFromNotes();
+    const loaded = await api(`/api/notes?${params}`);
+    notes = applyQueued(loaded);
+    cacheNotes(!search && !label);
+    refreshCurrent();
     renderNotes();
   } catch (error) {
-    if (localStorage.cachedNotes) {
-      notes = applyQueuedEdits(JSON.parse(localStorage.cachedNotes));
-      refreshCurrentFromNotes();
+    if (networkError(error)) {
+      notes = applyQueued(readJson(noteCacheKey(), []));
+      refreshCurrent();
       renderNotes();
       updateSyncState();
-    }
+    } else showToast(error.message, true);
   }
-}
-
-function refreshCurrentFromNotes() {
-  if (!current) return;
-  const refreshed = notes.find((note) => note.id === current.id);
-  if (!refreshed) return;
-  const active = document.activeElement;
-  const isTyping = active === $("#noteTitle") || active === $("#noteContent");
-  if (canEditCurrent() && isTyping) return;
-  current = { ...current, ...refreshed };
-  $("#noteTitle").value = current.title || "";
-  $("#noteContent").value = current.content || "";
-  $("#noteIcons").textContent = noteIcons(current);
-  renderImages();
-  renderShareInfo();
-  renderLabelChecks();
-  applyEditorPermissions();
 }
 
 function visibleNotes() {
-  if (scope === "mine") return notes.filter((note) => note.role !== "shared");
-  if (scope === "shared") return notes.filter((note) => note.role === "shared");
-  return notes;
+  if (scope === "mine") return notes.filter((note) => note.role === "owner" && !note.deleted_at);
+  if (scope === "shared") return notes.filter((note) => note.role === "shared" && !note.deleted_at);
+  if (scope === "trash") return notes.filter((note) => note.deleted_at);
+  return notes.filter((note) => !note.deleted_at);
+}
+
+function relativeTime(value) {
+  const time = new Date(value).getTime();
+  const seconds = Math.max(1, Math.round((Date.now() - time) / 1000));
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function noteIcons(note) {
-  return `${note.is_pinned ? "📌" : ""}${note.is_locked ? "🔒" : ""}${note.shares?.length || note.incoming ? "🤝" : ""}${note.offlineQueued ? "⏳" : ""}`;
+  return `${note.is_pinned ? "●" : ""}${note.is_locked ? " ◈" : ""}${note.role === "shared" ? " ◇" : ""}`.trim();
 }
 
 function renderNotes() {
-  renderScopeControls();
-  const box = $("#notes");
+  const titles = {
+    all: ["All notes", "Everything you’re working on, in one place."],
+    mine: ["My notes", "Notes you own and control."],
+    shared: ["Shared with me", "Ideas your collaborators invited you into."],
+    trash: ["Trash", "Restore notes or remove them permanently."],
+  };
+  $("#scopeTitle").textContent = titles[scope]?.[0] || titles.all[0];
+  $("#scopeSubtitle").textContent = titles[scope]?.[1] || titles.all[1];
+  $$("[data-scope]").forEach((button) =>
+    button.classList.toggle("active", button.dataset.scope === scope),
+  );
+  $("#gridBtn").classList.toggle("active", view === "grid");
+  $("#listBtn").classList.toggle("active", view === "list");
+  $("#allCount").textContent =
+    scope === "trash" ? "" : notes.filter((note) => !note.deleted_at).length;
   const list = visibleNotes();
+  const box = $("#notes");
   box.className = `notes ${view}`;
-  box.innerHTML =
-    list
-      .map(
-        (note) => `
-    <article class="note-card ${note.role === "shared" ? "shared-card" : ""}" style="background:${note.color || "#fff"}" onclick="openNote(${note.id})">
-      <div class="icons">${noteIcons(note)}</div>
-      <h3>${esc(note.title || "Untitled")}</h3>
-      <p>${note.is_locked && !note.content ? "This note is locked. Click to unlock." : esc(note.content || "")}</p>
-      <div class="chips">
-        ${(note.labels || []).map((label) => `<span class="chip">${esc(label.name)}</span>`).join("")}
-        ${note.role === "shared" ? `<span class="chip">Shared ${permissionLabel(note.permission)}</span>` : ""}
-        ${note.incoming ? `<span class="chip">From ${esc(note.incoming.owner_email)}</span>` : ""}
-        ${note.offlineQueued ? '<span class="chip warning">Queued offline</span>' : ""}
-      </div>
-    </article>
-  `,
-      )
-      .join("") ||
-    `<p class="muted">No notes in ${esc($("#scopeTitle").textContent.toLowerCase())}.</p>`;
+  box.innerHTML = list.length
+    ? list
+        .map((note) => {
+          const preview =
+            note.is_locked && !note.is_unlocked
+              ? "Unlock to view this note."
+              : note.content || "No content yet.";
+          const trashActions =
+            scope === "trash"
+              ? `<div class="chips"><button type="button" data-restore="${note.id}">Restore</button><button type="button" class="danger-text" data-purge="${note.id}">Delete forever</button></div>`
+              : "";
+          return `<article class="note-card" data-note-id="${note.id}" tabindex="0" role="button" style="background:${esc(note.color || "#ffffff")}"><div class="icons">${esc(noteIcons(note))}</div><h2>${esc(note.title || "Untitled")}</h2><p>${esc(preview)}</p><div class="chips">${(note.labels || []).map((label) => `<span class="chip">${esc(label.name)}</span>`).join("")}${note.role === "shared" ? `<span class="chip">${note.permission === "edit" ? "Can edit" : "Read only"}</span>` : ""}${note.offlineQueued ? '<span class="chip warning">Local draft</span>' : ""}</div><div class="note-meta"><span>${note.deleted_at ? "Deleted" : "Edited"} ${relativeTime(note.deleted_at || note.updated_at)}</span><span>v${note.version}</span></div>${trashActions}</article>`;
+        })
+        .join("")
+    : `<div class="empty-state"><div><span>${scope === "trash" ? "♲" : "✦"}</span><b>${scope === "trash" ? "Trash is empty" : "No notes here yet"}</b><p>${scope === "trash" ? "Deleted notes will appear here." : "Create a note and give the idea somewhere to grow."}</p></div></div>`;
+}
+
+function refreshCurrent() {
+  if (!current || draftDirty || currentConflict) return;
+  const refreshed = notes.find((note) => note.id === current.id);
+  if (!refreshed) return;
+  current = refreshed;
+  fillEditor();
 }
 
 async function openNote(id) {
+  if (scope === "trash") return;
+  if (current?.id !== id && (await saveCurrent()) === false) {
+    return showToast("Reconnect to save this protected note before leaving it.", true);
+  }
   current = notes.find((note) => note.id === id);
   if (!current) return;
-
-  if (current.is_locked && !current.content) {
-    const password = prompt(
-      "This note is password-protected. Enter password to unlock:",
-    );
+  if (current.is_locked && !current.is_unlocked) {
+    const password = prompt("Enter this note’s password:");
     if (!password) return;
     try {
-      await api(`/api/notes/${id}/unlock`, {
-        method: "POST",
-        body: JSON.stringify({ password }),
-      });
+      await api(`/api/notes/${id}/unlock`, { method: "POST", body: JSON.stringify({ password }) });
       await loadNotes();
       current = notes.find((note) => note.id === id);
     } catch (error) {
-      alert(error.message);
-      return;
+      return showToast(error.message, true);
     }
   }
-
+  draftDirty = false;
+  currentConflict = null;
+  $("#conflictNotice").classList.add("hidden");
   $("#editor").classList.remove("hidden");
+  fillEditor();
+  connectRealtime();
+  $("#noteTitle").focus();
+}
+
+function fillEditor() {
+  if (!current) return;
   $("#noteTitle").value = current.title || "";
   $("#noteContent").value = current.content || "";
   $("#noteIcons").textContent = noteIcons(current);
+  $("#markdownPreview").innerHTML = renderMarkdown(current.content || "");
+  applyPermissions();
   renderImages();
-  renderShareInfo();
+  renderShares();
   renderLabelChecks();
-  applyEditorPermissions();
-  connectRealtime();
 }
 
-function closeEditor() {
-  if (socket) socket.close();
-  socket = null;
-  current = null;
-  $("#editor").classList.add("hidden");
-}
-
-function canEditCurrent() {
+function canEdit() {
   return current?.permission === "edit";
 }
-
-function isOwnerCurrent() {
-  return current && current.role !== "shared";
+function isOwner() {
+  return current?.role === "owner";
 }
 
-function applyEditorPermissions() {
-  const canEdit = canEditCurrent();
-  const isOwner = isOwnerCurrent();
-  $("#noteTitle").disabled = !canEdit;
-  $("#noteContent").disabled = !canEdit;
-  $("#readOnlyNotice").classList.toggle("hidden", canEdit);
-  $("#imageBtn").classList.toggle("hidden", !canEdit);
-  ["#pinBtn", "#deleteBtn", "#noteLabelsBtn", "#lockBtn", "#shareBtn"].forEach(
-    (selector) => {
-      $(selector).classList.toggle("hidden", !isOwner);
-    },
-  );
-  $("#saveState").textContent = canEdit
+function applyPermissions() {
+  const editable = canEdit();
+  $("#noteTitle").disabled = !editable;
+  $("#noteContent").disabled = !editable;
+  $("#readOnlyNotice").classList.toggle("hidden", editable);
+  $("#imageBtn").classList.toggle("hidden", !editable);
+  for (const selector of ["#pinBtn", "#noteLabelsBtn", "#lockBtn", "#shareBtn", "#deleteBtn"]) {
+    $(selector).classList.toggle("hidden", !isOwner());
+  }
+  $("#pinBtn").textContent = current.is_pinned ? "Unpin" : "Pin";
+  $("#saveState").textContent = editable
     ? current.offlineQueued
-      ? "Queued offline"
+      ? "Local draft"
       : "Ready"
     : "Read only";
 }
 
 function renderImages() {
-  const deleteControl = (image) =>
-    canEditCurrent()
-      ? `<button class="image-delete" title="Delete image" onclick="deleteImage(${image.id})">Remove</button>`
-      : "";
-  $("#imageList").innerHTML = (current.images || [])
+  $("#imageList").innerHTML = (current?.images || [])
     .map(
-      (image) => `
-      <figure class="image-thumb">
-        <img src="${esc(image.path)}" alt="${esc(image.original_name || "attachment")}">
-        ${deleteControl(image)}
-      </figure>
-    `,
+      (image) =>
+        `<figure class="image-thumb"><img src="${esc(image.url)}" alt="${esc(image.original_name || "Note attachment")}" />${canEdit() ? `<button type="button" class="image-delete" data-delete-image="${image.id}">Remove</button>` : ""}</figure>`,
     )
     .join("");
 }
 
-async function deleteImage(imageId) {
-  if (!current || !canEditCurrent())
-    return toast("Read-only shared notes cannot be edited.");
-  if (!confirm("Delete this image attachment?")) return;
-  const noteId = current.id;
-  try {
-    await api(`/api/notes/${noteId}/images/${imageId}`, { method: "DELETE" });
-    current.images = (current.images || []).filter(
-      (image) => image.id !== imageId,
-    );
-    renderImages();
-    await loadNotes();
-    current = notes.find((note) => note.id === noteId) || current;
-    renderImages();
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-function permissionLabel(permission) {
-  return permission === "edit" ? "editable" : "read-only";
-}
-
-function renderShareInfo() {
+function renderShares() {
   if (!current) return;
-  let incoming = "";
-  if (current.incoming) {
-    incoming = `
-      <div class="share-detail">
-        Shared by <b>${esc(current.incoming.owner_name)}</b>
-        (${esc(current.incoming.owner_email)}) as
-        <b>${permissionLabel(current.incoming.permission)}</b>
-        at ${esc(current.incoming.created_at)}
-      </div>
-    `;
-  }
-
-  let recipients = "";
-  if (current.shares?.length && isOwnerCurrent()) {
-    recipients = `
-      <b>Recipients</b>
-      <div class="share-recipients">
-        ${current.shares
-          .map(
-            (share) => `
-          <div class="share-recipient">
-            <span>${esc(share.email)}</span>
-            <select onchange="updateSharePermission(${share.id}, this.value)">
-              <option value="read" ${share.permission === "read" ? "selected" : ""}>Read only</option>
-              <option value="edit" ${share.permission === "edit" ? "selected" : ""}>Editable</option>
-            </select>
-            <small>${esc(share.created_at)}</small>
-            <button onclick="revokeShare(${share.id})">Revoke</button>
-          </div>
-        `,
-          )
-          .join("")}
-      </div>
-    `;
-  }
-
-  const html =
-    incoming + recipients ||
-    '<span class="muted">This note is not shared.</span>';
-  $("#shareList").innerHTML = html;
-  $("#ownerShares").innerHTML = isOwnerCurrent()
-    ? recipients || '<span class="muted">No recipients yet.</span>'
-    : incoming || '<span class="muted">No sharing details.</span>';
+  const incoming = current.incoming
+    ? `<p>Shared by <b>${esc(current.incoming.owner_name)}</b> (${esc(current.incoming.owner_email)}) · ${current.incoming.permission === "edit" ? "Can edit" : "Read only"}</p>`
+    : "";
+  const recipients = isOwner()
+    ? (current.shares || [])
+        .map(
+          (share) =>
+            `<div class="share-recipient"><span>${esc(share.email)}</span><select data-share-permission="${share.id}" aria-label="Permission for ${esc(share.email)}"><option value="read" ${share.permission === "read" ? "selected" : ""}>Read only</option><option value="edit" ${share.permission === "edit" ? "selected" : ""}>Can edit</option></select><button type="button" data-revoke-share="${share.id}">Revoke</button></div>`,
+        )
+        .join("")
+    : "";
+  $("#shareList").innerHTML = incoming + recipients;
+  $("#ownerShares").innerHTML = recipients || '<p class="muted">No recipients yet.</p>';
 }
 
-async function saveNote() {
-  if (!current || !canEditCurrent()) {
-    $("#saveState").textContent = "Read only";
-    return;
-  }
-
-  const body = {
-    title: $("#noteTitle").value,
-    content: $("#noteContent").value,
-  };
-
-  clearTimeout(stateTimer);
-  $("#saveState").textContent = navigator.onLine
-    ? "Saving..."
-    : "Queued offline";
-  patchNote(current.id, body);
-
-  if (!navigator.onLine) {
-    queueOfflineEdit(current.id, body);
-    renderNotes();
-    return;
-  }
-
-  try {
-    await api(`/api/notes/${current.id}`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-    });
-    const queue = getQueuedEdits();
-    delete queue[current.id];
-    saveQueuedEdits(queue);
-    patchNote(current.id, { ...body, offlineQueued: false });
-    $("#saveState").textContent = "Saved";
-    if (socket?.readyState === WebSocket.OPEN)
-      socket.send(JSON.stringify({ type: "edit", ...body }));
-    renderNotes();
-  } catch (error) {
-    if (networkLooksOffline(error)) {
-      queueOfflineEdit(current.id, body);
-      $("#saveState").textContent = "Queued offline";
-      renderNotes();
-    } else {
-      $("#saveState").textContent = error.message;
-    }
-  }
-
-  stateTimer = setTimeout(() => {
-    if (current)
-      $("#saveState").textContent = current.offlineQueued
-        ? "Queued offline"
-        : "Ready";
-  }, 1500);
+function renderLabelChecks() {
+  if (!current) return;
+  const selected = new Set((current.labels || []).map((label) => label.id));
+  $("#labelChecks").innerHTML = labels.length
+    ? labels
+        .map(
+          (label) =>
+            `<label class="check-row"><span>${esc(label.name)}</span><input type="checkbox" value="${label.id}" ${selected.has(label.id) ? "checked" : ""} /></label>`,
+        )
+        .join("")
+    : '<p class="muted">Create a label first.</p>';
 }
 
-function debounceSave() {
+function draftBody() {
+  return { title: $("#noteTitle").value, content: $("#noteContent").value, color: current.color };
+}
+
+function scheduleSave() {
+  if (!current || !canEdit()) return;
+  draftDirty = true;
+  patchNote(current.id, draftBody());
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveNote, 300);
+  $("#saveState").textContent = navigator.onLine ? "Unsaved" : "Saved locally";
+  saveTimer = setTimeout(saveCurrent, 550);
+}
+
+async function saveCurrent() {
+  clearTimeout(saveTimer);
+  if (!current || !canEdit() || !draftDirty || currentConflict) return true;
+  if (saving) {
+    saveAgain = true;
+    return true;
+  }
+  saving = true;
+  updateSyncState("Saving…");
+  do {
+    saveAgain = false;
+    const note = current;
+    const body = draftBody();
+    draftDirty = false;
+    patchNote(note.id, body);
+    if (!navigator.onLine) {
+      if (queueDraft(note, body)) {
+        $("#saveState").textContent = "Saved locally";
+      } else {
+        draftDirty = true;
+        $("#saveState").textContent = "Reconnect to save protected note";
+        saving = false;
+        updateSyncState();
+        return false;
+      }
+      break;
+    }
+    try {
+      const saved = await api(`/api/notes/${note.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ ...body, baseVersion: note.version }),
+      });
+      removeQueuedDraft(note.id);
+      patchNote(note.id, { ...saved, offlineQueued: false });
+      if (current?.id === note.id) $("#saveState").textContent = "Saved";
+    } catch (error) {
+      if (networkError(error)) {
+        queueDraft(note, body);
+        $("#saveState").textContent = "Saved locally";
+      } else if (error.status === 409) {
+        queueDraft(note, body);
+        showConflict(body, error.data.current);
+      } else {
+        draftDirty = true;
+        queueDraft(note, body);
+        $("#saveState").textContent = "Draft kept locally";
+        showToast(error.message, true);
+      }
+    }
+  } while ((saveAgain || draftDirty) && current && !currentConflict);
+  saving = false;
+  updateSyncState();
+  renderNotes();
+  return true;
+}
+
+function showConflict(mine, server) {
+  currentConflict = { mine: { ...mine }, server };
+  $("#conflictNotice").classList.remove("hidden");
+  $("#saveState").textContent = "Conflict";
+  updateSyncState("Conflict needs review");
+}
+
+function useServerVersion() {
+  if (!currentConflict?.server) return;
+  removeQueuedDraft(current.id);
+  patchNote(current.id, { ...currentConflict.server, offlineQueued: false });
+  current = notes.find((note) => note.id === current.id);
+  currentConflict = null;
+  draftDirty = false;
+  $("#conflictNotice").classList.add("hidden");
+  fillEditor();
+  updateSyncState();
+}
+
+async function keepMine() {
+  if (!currentConflict?.server) return;
+  const mine = currentConflict.mine;
+  current.version = currentConflict.server.version;
+  currentConflict = null;
+  $("#conflictNotice").classList.add("hidden");
+  $("#noteTitle").value = mine.title;
+  $("#noteContent").value = mine.content;
+  draftDirty = true;
+  await saveCurrent();
+}
+
+async function closeEditor() {
+  if ((await saveCurrent()) === false) return false;
+  socket?.close();
+  socket = null;
+  current = null;
+  currentConflict = null;
+  $("#editor").classList.add("hidden");
+  return true;
 }
 
 function connectRealtime() {
-  if (socket) socket.close();
-  if (!current || current.permission !== "edit") return;
+  socket?.close();
+  if (!current || !canEdit() || !navigator.onLine) return;
   socket = new WebSocket(
     `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?noteId=${current.id}`,
   );
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    if (
-      (message.type === "remoteEdit" || message.type === "saved") &&
-      current?.id
-    ) {
-      if (message.from === me?.id) return;
-      $("#noteTitle").value = message.title;
-      $("#noteContent").value = message.content;
-      patchNote(current.id, { title: message.title, content: message.content });
-      renderNotes();
-      $("#saveState").textContent = "Remote changes received";
+    if (message.from === me?.id || message.noteId !== current?.id) return;
+    if (message.type === "remoteEdit") {
+      if (
+        draftDirty ||
+        current?.offlineQueued ||
+        [$("#noteTitle"), $("#noteContent")].includes(document.activeElement)
+      ) {
+        showConflict(draftBody(), { ...current, ...message });
+      } else {
+        patchNote(current.id, message);
+        fillEditor();
+        $("#saveState").textContent = "Updated by collaborator";
+        renderNotes();
+      }
+    }
+    if (["accessChanged", "deleted"].includes(message.type)) {
+      showToast("Access to this note changed. Refreshing…");
+      closeEditor().then(loadNotes);
+    }
+  };
+  socket.onclose = (event) => {
+    if (event.code === 4403 && current) {
+      showToast("Your collaboration permission changed.", true);
+      closeEditor().then(loadNotes);
     }
   };
 }
 
 function openPanel(id) {
-  if (
-    current &&
-    ["noteLabelPanel", "lockPanel", "sharePanel"].includes(id) &&
-    !isOwnerCurrent()
-  ) {
-    toast("Only the note owner can use this action.");
-    return;
-  }
-  if (current && id === "imagePanel" && !canEditCurrent()) {
-    toast("Read-only shared notes cannot be edited.");
-    return;
-  }
-
+  if (["noteLabelPanel", "lockPanel", "sharePanel"].includes(id) && current && !isOwner())
+    return showToast("Only the owner can use that action.", true);
+  if (id === "imagePanel" && current && !canEdit())
+    return showToast("This note is read-only.", true);
   $$(".panel").forEach((panel) => panel.classList.add("hidden"));
   $(`#${id}`).classList.remove("hidden");
   $("#modal").classList.remove("hidden");
   $("#modalMsg").textContent = "";
-
-  if (id === "profilePanel" && me) {
+  if (id === "profilePanel") {
     $("#profileForm").displayName.value = me.display_name;
-    $("#profileAvatarPreview").src = me.avatar_path || "/icon.svg";
+    $("#profileAvatarPreview").src = me.avatar_url || "/icon.svg";
   }
-  if (id === "prefsPanel" && me) {
+  if (id === "prefsPanel") {
     $("#prefsForm").fontSize.value = me.preferences?.fontSize || 16;
     $("#prefsForm").theme.value = me.preferences?.theme || "light";
-    $("#prefsForm").defaultColor.value =
-      me.preferences?.defaultColor || "#ffffff";
+    $("#prefsForm").defaultColor.value = me.preferences?.defaultColor || "#ffffff";
   }
   if (id === "noteLabelPanel") renderLabelChecks();
   if (id === "lockPanel") configureLockPanel();
-  if (id === "sharePanel") renderShareInfo();
+  if (id === "sharePanel") renderShares();
+  $(`#${id} input, #${id} select`)?.focus();
 }
 
 function closePanel() {
   $("#modal").classList.add("hidden");
 }
 
-function renderLabelChecks() {
-  if (!current) return;
-  const attached = new Set((current.labels || []).map((label) => label.id));
-  $("#labelChecks").innerHTML =
-    labels
-      .map(
-        (label) => `
-    <label class="check-row" title="${esc(label.name)}">
-      <span>${esc(label.name)}</span>
-      <input type="checkbox" value="${label.id}" ${attached.has(label.id) ? "checked" : ""}>
-    </label>
-  `,
-      )
-      .join("") || "<p>Create a label first.</p>";
-}
-
 function configureLockPanel() {
-  const protectedNote = !!current?.is_locked;
+  const protectedNote = Boolean(current?.is_locked);
   $("#lockForm").reset();
   $("#lockDisableForm").reset();
-  $("#lockCurrent").classList.toggle("hidden", !protectedNote);
+  $("#lockCurrentLabel").classList.toggle("hidden", !protectedNote);
   $("#lockDisableForm").classList.toggle("hidden", !protectedNote);
-  $("#lockSetBtn").textContent = protectedNote
-    ? "Change password"
-    : "Enable password";
+  $("#lockSetBtn").textContent = protectedNote ? "Change password" : "Enable password";
   $("#lockHint").textContent = protectedNote
-    ? "To change the note password, enter the current password and the new password twice. To disable protection, only enter the current password below."
-    : "This note is not password-protected. Enter a new password twice to enable protection.";
+    ? "Enter the current password before changing or disabling protection."
+    : "Set a password of at least 8 characters.";
 }
 
-async function saveNoteLabels() {
-  if (!isOwnerCurrent()) return toast("Only the note owner can change labels.");
-  const labelIds = $$("#labelChecks input:checked").map((input) =>
-    Number(input.value),
-  );
+async function downloadExport(format) {
+  try {
+    const response = await fetch(`/api/export?format=${format}`, {
+      credentials: "same-origin",
+      headers: { "X-NoteVerse-Request": "1" },
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || "Export failed.");
+    }
+    const blob = await response.blob();
+    const anchor = document.createElement("a");
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = `noteverse-export.${format === "markdown" ? "md" : "json"}`;
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function boot() {
+  if ("serviceWorker" in navigator)
+    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+  window.addEventListener("online", async () => {
+    await checkMe();
+    await saveCurrent();
+    await syncOfflineEdits();
+  });
+  window.addEventListener("offline", updateSyncState);
+  document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "/" &&
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)
+    ) {
+      event.preventDefault();
+      $("#search").focus();
+    }
+    if (event.key === "Escape") {
+      if (!$("#modal").classList.contains("hidden")) closePanel();
+      else if (!$("#editor").classList.contains("hidden")) closeEditor();
+    }
+  });
+  await checkMe();
+}
+
+$$("[data-auth-tab]").forEach((button) =>
+  button.addEventListener("click", () => showAuthTab(button.dataset.authTab)),
+);
+$("#loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+    });
+    await checkMe();
+  } catch (error) {
+    $("#authMsg").textContent = error.message;
+  }
+});
+$("#registerForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const data = await api("/api/register", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+    });
+    $("#authMsg").textContent = data.developmentActivationUrl
+      ? `${data.message} Development link: ${data.developmentActivationUrl}`
+      : data.message;
+  } catch (error) {
+    $("#authMsg").textContent = error.message;
+  }
+});
+$("#forgotForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const data = await api("/api/password/request-reset", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+    });
+    $("#authMsg").textContent = data.developmentResetUrl
+      ? `${data.message} Development link: ${data.developmentResetUrl}`
+      : data.message;
+  } catch (error) {
+    $("#authMsg").textContent = error.message;
+  }
+});
+
+$("#logoutBtn").addEventListener("click", async () => {
+  const id = me?.id;
+  try {
+    await api("/api/logout", { method: "POST" });
+  } finally {
+    purgeAccount(id);
+    navigator.serviceWorker.controller?.postMessage({ type: "PURGE_PRIVATE" });
+    location.reload();
+  }
+});
+$("#newNoteBtn").addEventListener("click", async () => {
+  try {
+    await saveCurrent();
+    const note = await api("/api/notes", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Untitled",
+        content: "",
+        color: me.preferences?.defaultColor || "#ffffff",
+      }),
+    });
+    scope = "mine";
+    localStorage.setItem(accountKey("scope"), scope);
+    $("#search").value = "";
+    history.replaceState(null, "", location.pathname);
+    await loadNotes();
+    openNote(note.id);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+$("#search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadNotes, 300);
+});
+$$("[data-scope]").forEach((button) =>
+  button.addEventListener("click", async () => {
+    if ((await saveCurrent()) === false) return;
+    scope = button.dataset.scope;
+    localStorage.setItem(accountKey("scope"), scope);
+    history.replaceState(null, "", location.pathname);
+    await closeEditor();
+    await loadNotes();
+    $("#sidebar").classList.remove("open");
+  }),
+);
+$("#gridBtn").addEventListener("click", () => {
+  view = "grid";
+  localStorage.setItem(accountKey("view"), view);
+  renderNotes();
+});
+$("#listBtn").addEventListener("click", () => {
+  view = "list";
+  localStorage.setItem(accountKey("view"), view);
+  renderNotes();
+});
+$("#menuBtn").addEventListener("click", () => {
+  $("#sidebar").classList.add("open");
+  $("#menuBtn").setAttribute("aria-expanded", "true");
+});
+$("#sidebarClose").addEventListener("click", () => {
+  $("#sidebar").classList.remove("open");
+  $("#menuBtn").setAttribute("aria-expanded", "false");
+});
+$("#accountBtn").addEventListener("click", () => {
+  const hidden = $("#accountPopover").classList.toggle("hidden");
+  $("#accountBtn").setAttribute("aria-expanded", String(!hidden));
+});
+$("#themeBtn").addEventListener("click", async () => {
+  const theme = document.body.classList.contains("dark") ? "light" : "dark";
+  document.body.classList.toggle("dark", theme === "dark");
+  try {
+    const data = await api("/api/preferences", {
+      method: "PUT",
+      body: JSON.stringify({ ...me.preferences, theme }),
+    });
+    me.preferences = data.preferences;
+    cacheAccount();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+$("#addLabelBtn").addEventListener("click", () => {
+  $("#labelForm").classList.toggle("hidden");
+  $("#newLabelName").focus();
+});
+
+$("#notes").addEventListener("click", async (event) => {
+  const restore = event.target.closest("[data-restore]");
+  const purge = event.target.closest("[data-purge]");
+  if (restore) {
+    await api(`/api/notes/${restore.dataset.restore}/restore`, { method: "POST" });
+    return loadNotes();
+  }
+  if (purge) {
+    if (confirm("Delete this note and its attachments forever?")) {
+      await api(`/api/notes/${purge.dataset.purge}/permanent`, { method: "DELETE" });
+      await loadNotes();
+    }
+    return;
+  }
+  const card = event.target.closest("[data-note-id]");
+  if (card) openNote(Number(card.dataset.noteId));
+});
+$("#notes").addEventListener("keydown", (event) => {
+  if (["Enter", " "].includes(event.key) && event.target.matches("[data-note-id]")) {
+    event.preventDefault();
+    openNote(Number(event.target.dataset.noteId));
+  }
+});
+$("#labels").addEventListener("click", async (event) => {
+  const filter = event.target.closest("[data-label-filter]");
+  if (filter) {
+    const params = new URLSearchParams(location.search);
+    if (filter.dataset.labelFilter) params.set("label", filter.dataset.labelFilter);
+    else params.delete("label");
+    history.replaceState(null, "", params.toString() ? `?${params}` : location.pathname);
+    renderLabels();
+    return loadNotes();
+  }
+  const menu = event.target.closest("[data-label-menu]");
+  if (menu) {
+    const id = Number(menu.dataset.labelMenu);
+    const label = labels.find((item) => item.id === id);
+    const name = prompt("Rename this label, or leave blank to delete it:", label?.name || "");
+    if (name === null) return;
+    if (!name.trim()) {
+      if (confirm("Delete this label? Notes will stay intact."))
+        await api(`/api/labels/${id}`, { method: "DELETE" });
+    } else await api(`/api/labels/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+    await loadLabels();
+    await loadNotes();
+  }
+});
+$("#labelForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/labels", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+    });
+    event.currentTarget.reset();
+    event.currentTarget.classList.add("hidden");
+    await loadLabels();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#noteTitle").addEventListener("input", scheduleSave);
+$("#noteContent").addEventListener("input", scheduleSave);
+$("#closeEditorBtn").addEventListener("click", closeEditor);
+$("#writeTab").addEventListener("click", () => {
+  $("#writeTab").classList.add("active");
+  $("#previewTab").classList.remove("active");
+  $("#noteContent").classList.remove("hidden");
+  $("#markdownPreview").classList.add("hidden");
+});
+$("#previewTab").addEventListener("click", () => {
+  $("#markdownPreview").innerHTML = renderMarkdown($("#noteContent").value);
+  $("#previewTab").classList.add("active");
+  $("#writeTab").classList.remove("active");
+  $("#noteContent").classList.add("hidden");
+  $("#markdownPreview").classList.remove("hidden");
+});
+$("#useServerBtn").addEventListener("click", useServerVersion);
+$("#keepMineBtn").addEventListener("click", keepMine);
+$("#pinBtn").addEventListener("click", async () => {
+  await saveCurrent();
+  await api(`/api/notes/${current.id}/pin`, {
+    method: "POST",
+    body: JSON.stringify({ pin: !current.is_pinned }),
+  });
+  await loadNotes();
+  current = notes.find((note) => note.id === current.id);
+  fillEditor();
+});
+$("#deleteBtn").addEventListener("click", async () => {
+  if (!confirm("Move this note to trash?")) return;
+  await api(`/api/notes/${current.id}`, { method: "DELETE" });
+  await closeEditor();
+  await loadNotes();
+});
+$("#imageList").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-image]");
+  if (!button || !confirm("Remove this image?")) return;
+  await api(`/api/notes/${current.id}/images/${button.dataset.deleteImage}`, { method: "DELETE" });
+  await loadNotes();
+  current = notes.find((note) => note.id === current.id);
+  fillEditor();
+});
+$("#shareList").addEventListener("change", async (event) => {
+  if (!event.target.matches("[data-share-permission]")) return;
+  await api(`/api/shares/${event.target.dataset.sharePermission}`, {
+    method: "PUT",
+    body: JSON.stringify({ permission: event.target.value }),
+  });
+  await loadNotes();
+  current = notes.find((note) => note.id === current.id);
+  fillEditor();
+});
+$("#shareList").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-revoke-share]");
+  if (!button || !confirm("Revoke this person’s access?")) return;
+  await api(`/api/shares/${button.dataset.revokeShare}`, { method: "DELETE" });
+  await loadNotes();
+  current = notes.find((note) => note.id === current.id);
+  fillEditor();
+});
+
+$$("[data-open-panel]").forEach((button) =>
+  button.addEventListener("click", () => openPanel(button.dataset.openPanel)),
+);
+$("#closeModalBtn").addEventListener("click", closePanel);
+$("#modal").addEventListener("click", (event) => {
+  if (event.target === $("#modal")) closePanel();
+});
+$("#saveLabelsBtn").addEventListener("click", async () => {
+  const labelIds = $$("#labelChecks input:checked").map((input) => Number(input.value));
   await api(`/api/notes/${current.id}/labels`, {
     method: "POST",
     body: JSON.stringify({ labelIds }),
   });
   closePanel();
   await loadNotes();
-  openNote(current.id);
-}
-
-async function renameLabel(id) {
-  const label = labels.find((item) => item.id === id);
-  const name = prompt("New label name:", label?.name || "");
-  if (!name) return;
-  try {
-    await api(`/api/labels/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ name }),
-    });
-    await loadLabels();
-    await loadNotes();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function deleteLabel(id) {
-  if (!confirm("Delete label? Notes will not be deleted.")) return;
-  await api(`/api/labels/${id}`, { method: "DELETE" });
-  await loadLabels();
-  await loadNotes();
-}
-
-async function updateSharePermission(id, permission) {
-  try {
-    await api(`/api/shares/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ permission }),
-    });
-    toast("Sharing permission updated.");
-    await loadNotes();
-    if (current) openNote(current.id);
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-async function revokeShare(id) {
-  if (!confirm("Revoke this share?")) return;
-  await api(`/api/shares/${id}`, { method: "DELETE" });
-  await loadNotes();
-  if (current) openNote(current.id);
-}
-
-$("#loginForm").onsubmit = async (event) => {
+  current = notes.find((note) => note.id === current.id);
+  fillEditor();
+});
+$("#profileForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await api("/api/login", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData($("#loginForm")))),
-    });
+    await api("/api/profile", { method: "PUT", body: new FormData(event.currentTarget) });
+    closePanel();
     await checkMe();
+    showToast("Profile saved.");
   } catch (error) {
-    $("#authMsg").textContent = error.message;
+    $("#modalMsg").textContent = error.message;
   }
-};
-
-$("#registerForm").onsubmit = async (event) => {
-  event.preventDefault();
-  try {
-    await api("/api/register", {
-      method: "POST",
-      body: JSON.stringify(
-        Object.fromEntries(new FormData($("#registerForm"))),
-      ),
-    });
-    await checkMe();
-  } catch (error) {
-    $("#authMsg").textContent = error.message;
-  }
-};
-
-$("#forgotForm").onsubmit = async (event) => {
-  event.preventDefault();
-  try {
-    await api("/api/password/request-reset", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData($("#forgotForm")))),
-    });
-    $("#authMsg").textContent = "Check MailHog for reset link / OTP.";
-  } catch (error) {
-    $("#authMsg").textContent = error.message;
-  }
-};
-
-$("#logoutBtn").onclick = async () => {
-  await api("/api/logout", { method: "POST" });
-  location.reload();
-};
-
-$("#newNoteBtn").onclick = async () => {
-  const note = await api("/api/notes", {
-    method: "POST",
-    body: JSON.stringify({
-      title: "Untitled",
-      content: "",
-      color: me.preferences?.defaultColor || "#ffffff",
-    }),
-  });
-  scope = "mine";
-  localStorage.noteScope = scope;
-  $("#search").value = "";
-  history.replaceState(null, "", location.pathname);
-  await loadNotes();
-  openNote(note.id);
-};
-
-$("#search").oninput = () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(loadNotes, 300);
-};
-
-$("#gridBtn").onclick = () => {
-  view = "grid";
-  localStorage.view = view;
-  renderNotes();
-};
-
-$("#listBtn").onclick = () => {
-  view = "list";
-  localStorage.view = view;
-  renderNotes();
-};
-
-$("#allNotesBtn").onclick = () => setNoteScope("all");
-$("#myNotesBtn").onclick = () => setNoteScope("mine");
-$("#sharedNotesBtn").onclick = () => setNoteScope("shared");
-
-$("#noteTitle").oninput = debounceSave;
-$("#noteContent").oninput = debounceSave;
-
-$("#pinBtn").onclick = async () => {
-  if (!isOwnerCurrent()) return;
-  await api(`/api/notes/${current.id}/pin`, {
-    method: "POST",
-    body: JSON.stringify({ pin: !current.is_pinned }),
-  });
-  await loadNotes();
-  openNote(current.id);
-};
-
-$("#deleteBtn").onclick = async () => {
-  if (
-    !isOwnerCurrent() ||
-    !confirm("Are you sure you want to delete this note?")
-  )
-    return;
-  await api(`/api/notes/${current.id}`, { method: "DELETE" });
-  closeEditor();
-  await loadNotes();
-};
-
-$("#labelForm").onsubmit = async (event) => {
-  event.preventDefault();
-  try {
-    await api("/api/labels", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData($("#labelForm")))),
-    });
-    $("#labelForm").reset();
-    await loadLabels();
-  } catch (error) {
-    alert(error.message);
-  }
-};
-
-$("#profileForm").onsubmit = async (event) => {
-  event.preventDefault();
-  await api("/api/profile", {
-    method: "PUT",
-    body: new FormData($("#profileForm")),
-  });
-  toast("Profile saved");
-  await checkMe();
-};
-
-$("#profileForm").elements.avatar.onchange = (event) => {
+});
+$("#profileForm").avatar.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (file) $("#profileAvatarPreview").src = URL.createObjectURL(file);
-};
-
-$("#prefsForm").onsubmit = async (event) => {
+});
+$("#prefsForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  await api("/api/preferences", {
-    method: "PUT",
-    body: JSON.stringify(Object.fromEntries(new FormData($("#prefsForm")))),
-  });
-  toast("Preferences saved");
-  await checkMe();
-};
-
-$("#changePwForm").onsubmit = async (event) => {
+  try {
+    const data = await api("/api/preferences", {
+      method: "PUT",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+    });
+    me.preferences = data.preferences;
+    cacheAccount();
+    document.body.classList.toggle("dark", me.preferences.theme === "dark");
+    document.body.style.fontSize = `${me.preferences.fontSize}px`;
+    closePanel();
+    showToast("Preferences saved.");
+  } catch (error) {
+    $("#modalMsg").textContent = error.message;
+  }
+});
+$("#changePwForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     await api("/api/password/change", {
       method: "POST",
-      body: JSON.stringify(
-        Object.fromEntries(new FormData($("#changePwForm"))),
-      ),
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
     });
-    toast("Password changed");
+    event.currentTarget.reset();
+    closePanel();
+    showToast("Password changed. Other sessions were revoked.");
   } catch (error) {
-    toast(error.message);
+    $("#modalMsg").textContent = error.message;
   }
-};
-
-$("#imageForm").onsubmit = async (event) => {
+});
+$("#imageForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!canEditCurrent())
-    return toast("Read-only shared notes cannot be edited.");
-  await api(`/api/notes/${current.id}/images`, {
-    method: "POST",
-    body: new FormData($("#imageForm")),
-  });
-  closePanel();
-  await loadNotes();
-  openNote(current.id);
-};
-
-$("#lockForm").onsubmit = async (event) => {
-  event.preventDefault();
-  if (!isOwnerCurrent())
-    return toast("Only the note owner can change note password.");
-  const data = Object.fromEntries(new FormData($("#lockForm")));
-  data.action = "set";
   try {
-    await api(`/api/notes/${current.id}/password`, {
+    await api(`/api/notes/${current.id}/images`, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: new FormData(event.currentTarget),
     });
+    event.currentTarget.reset();
     closePanel();
     await loadNotes();
-    openNote(current.id);
+    current = notes.find((note) => note.id === current.id);
+    fillEditor();
   } catch (error) {
-    toast(error.message);
+    $("#modalMsg").textContent = error.message;
   }
-};
-
-$("#lockDisableForm").onsubmit = async (event) => {
+});
+$("#lockForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!isOwnerCurrent())
-    return toast("Only the note owner can change note password.");
-  const data = Object.fromEntries(new FormData($("#lockDisableForm")));
-  data.action = "disable";
   try {
-    await api(`/api/notes/${current.id}/password`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    data.action = "set";
+    await api(`/api/notes/${current.id}/password`, { method: "POST", body: JSON.stringify(data) });
     closePanel();
     await loadNotes();
-    openNote(current.id);
+    current = notes.find((note) => note.id === current.id);
+    fillEditor();
   } catch (error) {
-    toast(error.message);
+    $("#modalMsg").textContent = error.message;
   }
-};
-
-$("#shareForm").onsubmit = async (event) => {
+});
+$("#lockDisableForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!isOwnerCurrent())
-    return toast("Only the note owner can share this note.");
+  try {
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    data.action = "disable";
+    await api(`/api/notes/${current.id}/password`, { method: "POST", body: JSON.stringify(data) });
+    closePanel();
+    await loadNotes();
+    current = notes.find((note) => note.id === current.id);
+    fillEditor();
+  } catch (error) {
+    $("#modalMsg").textContent = error.message;
+  }
+});
+$("#shareForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
   try {
     const data = await api(`/api/notes/${current.id}/share`, {
       method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData($("#shareForm")))),
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
     });
-    toast(
-      data.missing?.length
-        ? `Shared, but missing registered users: ${data.missing.join(", ")}`
-        : "Note shared and email notification sent",
-    );
+    showToast(data.missing.length ? `Shared, except: ${data.missing.join(", ")}` : "Note shared.");
     await loadNotes();
-    openNote(current.id);
+    current = notes.find((note) => note.id === current.id);
+    fillEditor();
   } catch (error) {
-    toast(error.message);
+    $("#modalMsg").textContent = error.message;
   }
-};
+});
+$("#importForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = form.file.files?.[0];
+  if (!file) return;
+  try {
+    const result = await api("/api/import", {
+      method: "POST",
+      body: JSON.stringify({
+        format: file.name.toLowerCase().endsWith(".md") ? "markdown" : "json",
+        data: await file.text(),
+        duplicateStrategy: form.duplicateStrategy.value,
+      }),
+    });
+    closePanel();
+    await loadNotes();
+    showToast(
+      `Imported: ${result.created} created, ${result.replaced} replaced, ${result.skipped} skipped.`,
+    );
+  } catch (error) {
+    $("#modalMsg").textContent = error.message;
+  }
+});
+$("#exportJsonBtn").addEventListener("click", () => downloadExport("json"));
+$("#exportMarkdownBtn").addEventListener("click", () => downloadExport("markdown"));
 
 boot();

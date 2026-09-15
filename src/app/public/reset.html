@@ -1,1 +1,43 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reset password</title><link rel="stylesheet" href="/styles.css"></head><body><main class="auth-card"><h1>Reset password</h1><form id="resetForm"><input name="token" placeholder="Reset token / OTP" required><input name="password" type="password" placeholder="New password" required><input name="confirm" type="password" placeholder="Confirm password" required><button>Reset password</button></form><p id="msg"></p><a href="/">Back to login</a></main><script>const p=new URLSearchParams(location.search);resetForm.token.value=p.get('token')||'';resetForm.onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(resetForm));const r=await fetch('/api/password/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});msg.textContent=r.ok?'Password reset. Please log in manually.':(await r.json()).error}</script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reset password — NoteVerse</title>
+    <link rel="stylesheet" href="/styles.css?v=8" />
+  </head>
+  <body>
+    <main class="auth-panel" style="min-height: 100vh">
+      <section class="auth-card">
+        <a class="logo" href="/"><img src="/icon.svg" alt="" /> NoteVerse</a>
+        <p class="eyebrow" style="margin-top: 40px">Account recovery</p>
+        <h2>Choose a new password</h2>
+        <form id="resetForm" class="auth-form">
+          <label>Reset token <input name="token" autocomplete="one-time-code" required /></label>
+          <label
+            >New password
+            <input
+              name="password"
+              type="password"
+              minlength="10"
+              autocomplete="new-password"
+              required
+          /></label>
+          <label
+            >Confirm password
+            <input
+              name="confirm"
+              type="password"
+              minlength="10"
+              autocomplete="new-password"
+              required
+          /></label>
+          <button class="primary" type="submit">Reset password</button>
+        </form>
+        <p id="msg" class="form-message" role="status"></p>
+        <a href="/">Back to sign in</a>
+      </section>
+    </main>
+    <script src="/reset.js?v=8"></script>
+  </body>
+</html>

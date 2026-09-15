@@ -1,20 +1,36 @@
 {
-  "name": "noteverse-final-project",
-  "version": "1.0.0",
-  "description": "Final project note management app with auth, labels, sharing, realtime, PWA and Docker Compose.",
+  "name": "noteverse",
+  "version": "2.0.0",
+  "private": true,
+  "description": "A secure, offline-capable note workspace with sharing and realtime collaboration.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "start:env": "node --env-file=../.env server.js",
+    "dev": "node --watch server.js",
+    "demo": "node scripts/seed-demo.js",
+    "demo:env": "node --env-file=../.env scripts/seed-demo.js",
+    "test": "node --test --test-concurrency=1",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run lint && npm test && npm run format:check"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^9.6.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^11.10.0",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
-    "helmet": "^7.1.0",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.13",
-    "ws": "^8.17.0"
+    "helmet": "^8.3.0",
+    "multer": "^2.0.2",
+    "nodemailer": "^10.0.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "eslint": "^10.10.0",
+    "prettier": "^3.6.2"
+  },
+  "engines": {
+    "node": ">=20.19 <25"
   }
 }

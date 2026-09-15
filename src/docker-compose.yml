@@ -1,25 +1,33 @@
 services:
   app:
     build: ./app
-    container_name: noteverse_app
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
     environment:
-      - NODE_ENV=production
-      - PORT=8080
-      - SESSION_SECRET=final-project-change-me
-      - APP_BASE_URL=http://localhost:8080
-      - SMTP_HOST=mailhog
-      - SMTP_PORT=1025
-      - MAIL_FROM=NoteVerse <noreply@noteverse.local>
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 8080
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
     volumes:
       - ./app/data:/usr/src/app/data
       - ./app/uploads:/usr/src/app/uploads
     depends_on:
       - mailhog
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   mailhog:
     image: mailhog/mailhog:v1.0.1
-    container_name: noteverse_mailhog
     ports:
       - "8025:8025"
-      - "1025:1025"
+    restart: unless-stopped
